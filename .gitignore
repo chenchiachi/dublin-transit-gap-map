@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data and generated outputs
+data/raw/*
+data/processed/*
+outputs/*
+
+# Keep empty folder placeholders
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!outputs/.gitkeep
+.agents/
