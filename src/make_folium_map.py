@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from html import escape
+from pathlib import Path
 
 import folium
 import geopandas as gpd
@@ -20,6 +21,12 @@ FREQUENCY_COLOURS = {
     "Low frequency": "#2c7bb6",
     "Medium frequency": "#fdae61",
     "High frequency": "#d7191c",
+}
+HOTSPOT_COLOURS = {
+    "Good access": "#2ca25f",
+    "Moderate access": "#fee08b",
+    "Poor access": "#f46d43",
+    "Potential transit gap": "#a50026",
 }
 
 
@@ -72,12 +79,22 @@ def _add_legend(transit_map: folium.Map) -> None:
             f'<div class="frequency-legend"><strong>Service frequency</strong>{items}</div>'
         )
     )
+    hotspot_items = "".join(
+        f'<div><span style="background:{colour};border-radius:0"></span>{label}</div>'
+        for label, colour in HOTSPOT_COLOURS.items()
+    )
+    transit_map.get_root().html.add_child(Element(
+        '<div class="frequency-legend" style="bottom:122px">'
+        f'<strong>Transit gap score</strong>{hotspot_items}'
+        '<small>Higher score = weaker access</small></div>'
+    ))
 
 
 def make_map(
     stops: gpd.GeoDataFrame,
     catchments: gpd.GeoDataFrame,
     frequency: pd.DataFrame,
+    hotspots: gpd.GeoDataFrame | None = None,
 ) -> folium.Map:
     """Create the interactive map, with only clusters and heatmap on initially."""
     stops = stops.copy()
@@ -112,6 +129,43 @@ def make_map(
         },
     ).add_to(catchment_layer)
     catchment_layer.add_to(transit_map)
+
+    if hotspots is not None and not hotspots.empty:
+        worst = hotspots.nsmallest(100, "rank")
+        worst_layer = folium.FeatureGroup(name="Top 100 transit gaps", show=True)
+        folium.GeoJson(
+            worst,
+            style_function=lambda _: {
+                "fillColor": HOTSPOT_COLOURS["Potential transit gap"],
+                "color": HOTSPOT_COLOURS["Potential transit gap"],
+                "weight": 0.7,
+                "fillOpacity": 0.3,
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=["rank", "cell_id", "gap_score", "nearest_stop_m", "nearby_departures"],
+                aliases=["Rank", "Cell", "Gap score", "Nearest stop (m)", "Departures within 800m"],
+                localize=True,
+            ),
+        ).add_to(worst_layer)
+        worst_layer.add_to(transit_map)
+
+        for label in HOTSPOT_COLOURS:
+            subset = hotspots[hotspots["access_class"] == label]
+            layer = folium.FeatureGroup(
+                name=f"All cells: {label}", show=False
+            )
+            folium.GeoJson(
+                subset,
+                style_function=lambda _, colour=HOTSPOT_COLOURS[label]: {
+                    "fillColor": colour, "color": colour, "weight": 0.6, "fillOpacity": 0.28,
+                },
+                tooltip=folium.GeoJsonTooltip(
+                    fields=["cell_id", "access_class", "gap_score", "nearest_stop_m", "nearby_departures"],
+                    aliases=["Cell", "Access", "Gap score", "Nearest stop (m)", "Departures within 800m"],
+                    localize=True,
+                ),
+            ).add_to(layer)
+            layer.add_to(transit_map)
 
     heat_layer = folium.FeatureGroup(name="Frequency heatmap", show=True)
     maximum = max(1.0, float(np.log1p(stops["departures"]).max()))
@@ -167,11 +221,14 @@ def main() -> None:
     parser.add_argument("--catchments", default="data/processed/stop_catchments.geojson")
     parser.add_argument("--frequency", default="data/processed/stop_frequency.csv")
     parser.add_argument("--output", default="outputs/dublin_transit_map.html")
+    parser.add_argument("--hotspots", default="outputs/underserved_hotspots.geojson")
     args = parser.parse_args()
+    hotspot_path = Path(args.hotspots)
     transit_map = make_map(
         gpd.read_file(args.stops),
         gpd.read_file(args.catchments),
         pd.read_csv(args.frequency, dtype={"stop_id": "string"}),
+        gpd.read_file(hotspot_path) if hotspot_path.exists() else None,
     )
     output = ensure_parent(args.output)
     transit_map.save(output)
